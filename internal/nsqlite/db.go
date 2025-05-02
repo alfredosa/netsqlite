@@ -1,32 +1,64 @@
 package nsqlite
 
 import (
+	"context"
 	"database/sql"
-	"log"
 	"log/slog"
+	"path/filepath"
+	"sync"
 
+	"github.com/jackc/puddle/v2"
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-func CreateOrOpen(path string) *sql.DB {
-	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+type DBManager struct {
+	dbHandles map[string]*puddle.Pool[*sql.DB]
+	dbMutex   sync.RWMutex
+	datadir   string
+}
+
+func NewManager(datadir string) *DBManager {
+	return &DBManager{
+		dbHandles: make(map[string]*puddle.Pool[*sql.DB]),
+		datadir:   datadir,
+	}
+}
+
+// --- Helper to get/open DB handle ---
+func (s *DBManager) AcquirePool(dbName string) (*puddle.Pool[*sql.DB], error) {
+	if dbName == "" {
+		return nil, status.Error(codes.InvalidArgument, "database_name is required")
 	}
 
-	// Verify WAL mode is enabled
-	var journalMode string
-	err = db.QueryRow("PRAGMA journal_mode;").Scan(&journalMode)
-	if err != nil {
-		log.Fatalf("Failed to query journal mode: %v", err)
-	}
-	slog.Info("Database journal mode", "mode", journalMode, "database", path)
+	dbpath := filepath.Join(s.datadir, dbName)
 
-	_, err = db.Exec("CREATE TABLE IF NOT EXISTS _test_wal (id INTEGER PRIMARY KEY);")
-	if err != nil {
-		log.Fatalf("Failed to create test table: %v", err)
+	s.dbMutex.RLock()
+	dbpool, exists := s.dbHandles[dbpath]
+	s.dbMutex.RUnlock()
+
+	if exists {
+		return dbpool, nil
 	}
 
-	slog.Info("Created database successfully", "database", path)
-	return db
+	// DB not open, try opening it (use WAL mode, etc.)
+	s.dbMutex.Lock()
+	defer s.dbMutex.Unlock()
+
+	// Double-check if another goroutine opened it while waiting for lock
+	dbpool, exists = s.dbHandles[dbpath]
+	if exists {
+		return dbpool, nil
+	}
+
+	// This is going to be a poooool
+	newDb, err := NewPool(context.Background(), dbpath)
+	if err != nil {
+		slog.Error("Fatal Pool Creation", "error", err)
+		return nil, status.Error(codes.Internal, "failed to created a pool")
+	}
+
+	s.dbHandles[dbpath] = newDb
+	return newDb, nil
 }
