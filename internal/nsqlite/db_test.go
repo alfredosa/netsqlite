@@ -14,6 +14,7 @@ func TestDBManager_AcquirePool(t *testing.T) {
 	// Create a temporary directory
 	dir, err := os.MkdirTemp("", "netsqlite-*")
 	require.NoError(t, err, "Failed to create temp directory")
+	defer os.RemoveAll(dir)
 
 	// Ensure the directory has correct permissions
 	err = os.Chmod(dir, 0755)

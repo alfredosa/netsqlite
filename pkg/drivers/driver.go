@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-
-	"github.com/davecgh/go-spew/spew"
 )
 
 const DriverName = "netsqlite"
@@ -93,8 +91,6 @@ func (d *SQLDriver) OpenConnector(dsn string) (driver.Connector, error) {
 		config: cfg,
 	}
 
-	println("made it out with conn details")
-	spew.Dump(conn)
 	return conn, nil
 }
 
@@ -104,6 +100,5 @@ func (d *SQLDriver) Open(dsn string) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	println("attempting to connect")
 	return connector.Connect(context.Background())
 }

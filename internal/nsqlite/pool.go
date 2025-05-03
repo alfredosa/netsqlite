@@ -35,8 +35,9 @@ func CreateOrOpen(path string) (*sql.DB, error) {
 }
 
 func NewPool(ctx context.Context, dbPath string) (*puddle.Pool[*sql.DB], error) {
-	constructor := func(context.Context) (*sql.DB, error) {
+	slog.Info("Creating new pool", "database", dbPath)
 
+	constructor := func(context.Context) (*sql.DB, error) {
 		return CreateOrOpen(dbPath)
 	}
 	destructor := func(value *sql.DB) {

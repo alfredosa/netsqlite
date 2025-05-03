@@ -3,7 +3,9 @@ package nsqlite
 import (
 	"context"
 	"database/sql"
+	"log"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -20,6 +22,12 @@ type DBManager struct {
 }
 
 func NewManager(datadir string) *DBManager {
+	// Make sure that the datadir exists
+	err := os.MkdirAll(datadir, os.ModePerm)
+	if err != nil {
+		log.Fatal("Unable to create dir", err)
+	}
+
 	return &DBManager{
 		dbHandles: make(map[string]*puddle.Pool[*sql.DB]),
 		datadir:   datadir,
