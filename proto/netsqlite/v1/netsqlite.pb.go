@@ -485,7 +485,7 @@ const file_proto_netsqlite_v1_netsqlite_proto_rawDesc = "" +
 	"\x10NetsqliteService\x12?\n" +
 	"\x04Ping\x12\x19.netsqlite.v1.PingRequest\x1a\x1a.netsqlite.v1.PingResponse\"\x00\x12?\n" +
 	"\x04Exec\x12\x19.netsqlite.v1.ExecRequest\x1a\x1a.netsqlite.v1.ExecResponse\"\x00\x12D\n" +
-	"\x05Query\x12\x1a.netsqlite.v1.QueryRequest\x1a\x1b.netsqlite.v1.QueryResponse\"\x000\x01B)Z'internal/generated/proto/v1;netsqlitev1b\x06proto3"
+	"\x05Query\x12\x1a.netsqlite.v1.QueryRequest\x1a\x1b.netsqlite.v1.QueryResponse\"\x000\x01B!Z\x1f/proto/netsqlite/v1;netsqlitev1b\x06proto3"
 
 var (
 	file_proto_netsqlite_v1_netsqlite_proto_rawDescOnce sync.Once

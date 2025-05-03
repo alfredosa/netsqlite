@@ -4,31 +4,22 @@ import (
 	"context"
 	"flag"
 	"log"
-	"log/slog"
 	"net"
 	"os/signal"
 	"syscall"
 	"time"
 
-	pb "github.com/alfredosa/netsqlite/internal/generated/proto/v1"
 	grpchandler "github.com/alfredosa/netsqlite/internal/grpc"
+	pb "github.com/alfredosa/netsqlite/proto/netsqlite/v1" // Adjust import path
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
-// NOTE: Never used do we want one?
-func usage() {
-	slog.Info("Usage:")
-	slog.Info("     -p: port")
-	slog.Info("     <data dir>")
-}
-
-// --- Global Variables / Config ---
 var (
-	listenAddr = flag.String("addr", ":3541", "Address and port to listen on")
-	dbPath     = flag.String("data", "data/", "Path to the SQLite database file")
-	// TODO: In a real app, manage tokens securely (e.g., config file, env vars, secrets management)
+	listenAddr = flag.String("addr", ":3541", "Address and port to listen on for gRPC")
+	datadir    = flag.String("dir", "data", "Data directory for all databases")
+	// TODO: Add flags or env vars for loading tokens securely
 )
 
 func main() {
@@ -40,46 +31,46 @@ func main() {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
+	// --- Load Tokens (Replace with secure method) ---
+	validTokens := map[string]bool{
+		"SUPERSECRETTOKEN": true,
+		"ANOTHERVALIDONE":  true,
+	}
+	log.Printf("Loaded %d valid token(s) (INSECURELY!)", len(validTokens))
+
 	// --- Create Auth Interceptor ---
-	// TODO: Load valid tokens securely
-	validTokens := map[string]bool{"SUPERSECRETTOKEN": true} // Replace
 	authInterceptor := grpchandler.NewAuthInterceptor(validTokens)
 
 	// --- Create gRPC Server with Interceptors ---
 	grpcServer := grpc.NewServer(
-		grpc.ChainUnaryInterceptor( // Chain multiple unary interceptors if needed
-			authInterceptor.Unary(),
-			// TODO: OTEL
-			// Add other interceptors like logging, metrics here
-		),
-		grpc.ChainStreamInterceptor( // Chain stream interceptors
-			authInterceptor.Stream(),
-		),
+		grpc.ChainUnaryInterceptor(authInterceptor.Unary()),
+		grpc.ChainStreamInterceptor(authInterceptor.Stream()),
 	)
 
 	// --- Create and Register Your Service Implementation ---
-	// TODO: Remove tokens like this, very bad no like🏴‍☠
-	netsqliteSrv := grpchandler.NewNetsqliteServer(validTokens, *dbPath)
+	netsqliteSrv := grpchandler.NewNetsqliteServer(validTokens, *datadir)
 	pb.RegisterNetsqliteServiceServer(grpcServer, netsqliteSrv)
 
 	reflection.Register(grpcServer)
 	log.Println("gRPC reflection service registered.")
 
-	// --- Graceful Shutdown Handling (same as before) ---
+	// --- Graceful Shutdown Handling ---
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	go func() { // Start server (same as before)
+	go func() {
 		log.Printf("gRPC server listening at %v", lis.Addr())
-		if err := grpcServer.Serve(lis); err != nil {
+		if err := grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
 			log.Fatalf("Failed to serve gRPC: %v", err)
+		} else if err == grpc.ErrServerStopped {
+			log.Println("gRPC server stopped serving.")
 		}
 	}()
 
-	<-ctx.Done() // Wait for signal (same as before)
+	<-ctx.Done()
 	log.Println("Shutdown signal received. Attempting graceful shutdown...")
 
-	stopped := make(chan struct{}) // Graceful stop logic (same as before)
+	stopped := make(chan struct{})
 	go func() {
 		grpcServer.GracefulStop()
 		close(stopped)
@@ -87,11 +78,12 @@ func main() {
 	select {
 	case <-stopped:
 		log.Println("gRPC server gracefully stopped.")
-	case <-time.After(10 * time.Second):
+	case <-time.After(15 * time.Second): // Increased timeout
 		log.Println("Graceful shutdown timed out. Forcing stop.")
 		grpcServer.Stop()
 	}
 
-	// netsqliteSrv.CloseAllDBs() // Cleanup (same as before)
+	// TODO: Close all dbs gracefully
+	// netsqliteSrv.CloseAllDBs()
 	log.Println("Server shut down.")
 }

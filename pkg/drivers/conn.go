@@ -5,163 +5,164 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	// "your_project/internal/protocol" // Example import
-	// "io"
+	"io"
+
+	pb "github.com/alfredosa/netsqlite/proto/netsqlite/v1"
+
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// Ensure SQLConn implements driver.Conn and related interfaces at compile time.
-var _ driver.Conn = &SQLConn{}
-var _ driver.ConnPrepareContext = &SQLConn{}
-var _ driver.ConnBeginTx = &SQLConn{}
-var _ driver.Pinger = &SQLConn{} // Optional: Implement if you support Ping
-
-// SQLConn represents a single database connection.
+// SQLConn represents an active gRPC connection.
 type SQLConn struct {
-	connector *SQLConnector // Access config via connector.config if needed
-	// netConn net.Conn         // Example: Underlying network connection
-	// protoClient *protocol.Client // Example: Your protocol client
-	closed bool
-	// Add any other connection-specific state (e.g., transaction status)
+	grpcConn *grpc.ClientConn
+	client   pb.NetsqliteServiceClient
+	dbName   string
+	closed   bool
 }
 
-// PrepareContext returns a prepared statement handle.
-func (c *SQLConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	if c.closed {
-		return nil, driver.ErrBadConn // Or a more specific error
+// Compile-time interface checks
+var _ driver.Conn = &SQLConn{}
+var _ driver.Pinger = &SQLConn{}
+var _ driver.ExecerContext = &SQLConn{}
+var _ driver.QueryerContext = &SQLConn{}
+
+// TODO: var _ driver.ConnPrepareContext = &SQLConn{}
+// TODO: var _ driver.ConnBeginTx = &SQLConn{}
+
+// Helper to convert driver args to proto args
+func driverNamedValueToProtoValue(args []driver.NamedValue) ([]*structpb.Value, error) {
+	protoArgs := make([]*structpb.Value, len(args))
+	var err error
+	for i, arg := range args {
+		protoArgs[i], err = structpb.NewValue(arg.Value)
+		if err != nil {
+			return nil, fmt.Errorf("netsqlite: unsupported arg type %T at index %d: %w", arg.Value, i, err)
+		}
 	}
-
-	// TODO: Implement statement preparation.
-	// This might involve sending the query string to the server
-	// and receiving back a statement ID or handle.
-	fmt.Printf("PrepareContext: %s\n", query)
-
-	// Placeholder: Assume server returns a handle or confirms syntax
-	// serverStmtHandle := c.protoClient.Prepare(ctx, query)
-	// if err != nil {
-	//     return nil, err // Convert server error appropriately
-	// }
-
-	stmt := &SQLStmt{
-		conn:  c,
-		query: query,
-		// serverHandle: serverStmtHandle, // Store handle from server
-	}
-	return stmt, nil
+	return protoArgs, nil
 }
 
-// Close invalidates and potentially releases the connection.
+// Ping verifies the connection via gRPC Ping RPC.
+func (c *SQLConn) Ping(ctx context.Context) error {
+	if c.closed || c.client == nil {
+		return driver.ErrBadConn
+	}
+	fmt.Println("Driver: SQLConn.Ping executing gRPC Ping")
+	req := &pb.PingRequest{DatabaseName: c.dbName}
+	_, err := c.client.Ping(ctx, req)
+	if err != nil {
+		fmt.Printf("Driver: gRPC Ping failed: %v\n", err)
+		return driver.ErrBadConn
+	}
+	return nil
+}
+
+// ExecContext executes non-query statements via gRPC Exec RPC.
+func (c *SQLConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if c.closed || c.client == nil {
+		return nil, driver.ErrBadConn
+	}
+	fmt.Printf("Driver: ExecContext via gRPC: %s\n", query)
+
+	protoArgs, err := driverNamedValueToProtoValue(args)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &pb.ExecRequest{
+		DatabaseName: c.dbName,
+		Sql:          query,
+		Args:         protoArgs,
+		// TODO: Add TransactionID if applicable
+	}
+
+	resp, err := c.client.Exec(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("netsqlite: gRPC Exec failed: %w", err)
+	}
+
+	return &SQLResult{
+		rowsAffected: resp.RowsAffected,
+		lastInsertId: resp.LastInsertId,
+	}, nil
+}
+
+// QueryContext executes queries via gRPC Query RPC stream.
+func (c *SQLConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if c.closed || c.client == nil {
+		return nil, driver.ErrBadConn
+	}
+	fmt.Printf("Driver: QueryContext via gRPC: %s\n", query)
+
+	protoArgs, err := driverNamedValueToProtoValue(args)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &pb.QueryRequest{
+		DatabaseName: c.dbName,
+		Sql:          query,
+		Args:         protoArgs,
+		// TODO: Add TransactionID if applicable
+	}
+
+	stream, err := c.client.Query(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("netsqlite: gRPC Query failed: %w", err)
+	}
+
+	// Receive first message (must be columns or EOF)
+	firstResp, err := stream.Recv()
+	if err != nil {
+		if err == io.EOF { // No rows returned
+			return &SQLRows{closed: true, columns: []string{}}, nil
+		}
+		return nil, fmt.Errorf("netsqlite: failed receiving columns: %w", err)
+	}
+
+	colsResult := firstResp.GetColumns()
+	if colsResult == nil {
+		return nil, errors.New("netsqlite: protocol error - expected Columns first")
+	}
+
+	return &SQLRows{
+		stream:  stream,
+		columns: colsResult.Names,
+		closed:  false,
+	}, nil
+}
+
+// Close terminates the gRPC connection.
 func (c *SQLConn) Close() error {
 	if c.closed {
 		return nil
 	}
 	c.closed = true
-
-	// TODO: Implement connection closing.
-	// 1. Signal the server if necessary.
-	// 2. Close the underlying network connection (c.netConn.Close()).
-	fmt.Println("Connection Close")
-	// err := c.netConn.Close()
-	// return err // Return error from closing underlying resources
-
+	fmt.Println("Driver: Closing gRPC connection.")
+	if c.grpcConn != nil {
+		err := c.grpcConn.Close()
+		c.grpcConn = nil
+		c.client = nil
+		return err
+	}
 	return nil
 }
 
-// BeginTx starts a new transaction.
-func (c *SQLConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	if c.closed {
-		return nil, driver.ErrBadConn
-	}
+// --- Stubs for Future Implementation ---
+// TODO: Let's see how it goes. and implement them if it is necessary.
 
-	// TODO: Check if already in transaction if your protocol doesn't support nested tx
-	// if c.inTx { return nil, errors.New("netsqlite: already in transaction") }
-
-	// TODO: Implement transaction start.
-	// 1. Send a "BEGIN" command (or equivalent) to the server.
-	// 2. Handle options (opts.Isolation, opts.ReadOnly) if supported by server.
-	fmt.Printf("Begin Transaction (Options: ReadOnly=%v, Isolation=%v)\n", opts.ReadOnly, opts.Isolation)
-
-	// err := c.protoClient.Begin(ctx, opts) // Example
-	// if err != nil {
-	//     return nil, err // Convert server error
-	// }
-
-	// c.inTx = true // Mark connection as being in a transaction
-	return &SQLTx{conn: c}, nil
+func (c *SQLConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	return nil, errors.New("netsqlite: PrepareContext not implemented")
 }
 
-// --- Optional but Recommended Interfaces ---
+func (c *SQLConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return nil, errors.New("netsqlite: BeginTx not implemented")
+}
 
-// Prepare is the deprecated version of PrepareContext.
-// For compatibility, you can implement it by calling PrepareContext.
 func (c *SQLConn) Prepare(query string) (driver.Stmt, error) {
 	return c.PrepareContext(context.Background(), query)
 }
-
-// Begin is the deprecated version of BeginTx.
-// For compatibility, you can implement it by calling BeginTx.
 func (c *SQLConn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
-}
-
-// Pinger interface implementation (optional)
-func (c *SQLConn) Ping(ctx context.Context) error {
-	if c.closed {
-		return driver.ErrBadConn
-	}
-	// TODO: Implement ping logic.
-	// Send a specific PING command or execute a simple query ("SELECT 1")
-	// to verify the connection is alive and the server is responsive.
-	fmt.Println("Ping")
-	// err := c.protoClient.Ping(ctx) // Example
-	// if err != nil {
-	//     return driver.ErrBadConn // Indicate connection is likely dead
-	// }
-	return nil
-}
-
-// --- Potentially useful internal methods ---
-
-// execContext executes a query that doesn't return rows (e.g., INSERT, UPDATE, DELETE).
-// This might be called by SQLStmt.ExecContext or directly if you implement driver.ExecerContext.
-func (c *SQLConn) execContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if c.closed {
-		return nil, driver.ErrBadConn
-	}
-	// TODO:
-	// 1. Serialize query and args according to your protocol.
-	// 2. Send to server.
-	// 3. Receive result (LastInsertId, RowsAffected).
-	// 4. Handle errors.
-	fmt.Printf("ExecContext: %s, Args: %v\n", query, args)
-
-	// Placeholder
-	// lastID, affected, err := c.protoClient.Exec(ctx, query, args)
-	// if err != nil {
-	//    return nil, err // Convert error
-	// }
-	// return &SQLResult{lastInsertId: lastID, rowsAffected: affected}, nil
-	return &SQLResult{rowsAffected: 0}, nil // Bare minimum placeholder
-}
-
-// queryContext executes a query that returns rows (e.g., SELECT).
-// This might be called by SQLStmt.QueryContext or directly if you implement driver.QueryerContext.
-func (c *SQLConn) queryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if c.closed {
-		return nil, driver.ErrBadConn
-	}
-	// TODO:
-	// 1. Serialize query and args according to your protocol.
-	// 2. Send to server.
-	// 3. Receive column names and potentially the first batch of rows.
-	// 4. Handle errors.
-	fmt.Printf("QueryContext: %s, Args: %v\n", query, args)
-
-	// Placeholder
-	// serverRows, err := c.protoClient.Query(ctx, query, args)
-	// if err != nil {
-	//     return nil, err // Convert error
-	// }
-	// return NewSQLRows(c, serverRows), nil // Pass connection and server data stream/result
-
-	return nil, errors.New("netsqlite: queryContext not implemented") // Replace with actual implementation
 }

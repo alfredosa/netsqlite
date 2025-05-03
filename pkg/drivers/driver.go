@@ -1,95 +1,109 @@
 package drivers
 
 import (
-	"context" // Import context
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
 const DriverName = "netsqlite"
 
-// Ensure SQLDriver implements driver.DriverContext at compile time.
-var _ driver.DriverContext = &SQLDriver{} // Changed from driver.Driver
+// Config holds parsed DSN info.
+type Config struct {
+	Addr   string // Host:Port of the gRPC server
+	DBName string // Database identifier passed to server
+	Token  string // Auth token
 
+	// UseTLS is not yet implemented
+	UseTLS   bool   // TODO: Flag for enabling TLS (requires more config)
+	RawQuery string // Original query params if needed
+}
+
+// SQLDriver implements driver.DriverContext.
 type SQLDriver struct{}
+
+var _ driver.DriverContext = &SQLDriver{}
 
 func init() {
 	sql.Register(DriverName, &SQLDriver{})
 }
 
-// OpenConnector parses the DSN and returns a Connector.
-// It does NOT establish the connection; Connector.Connect does that.
-// DSN format: netsqlite://db:host/token
-func (d *SQLDriver) OpenConnector(dsn string) (driver.Connector, error) { // Renamed and changed return type
-	cfg, err := ParseDSN(dsn)
+// ParseDSN parses the netsqlite DSN string.
+// Format: netsqlite://[host]/[token]?database=[dbname]&tls=[bool]
+// Where tls is optional
+func ParseDSN(dsn string) (*Config, error) {
+	u, err := url.Parse(dsn)
 	if err != nil {
-		// It's often better to wrap the error for context
-		return nil, fmt.Errorf("netsqlite: parsing DSN failed: %w", err)
+		return nil, fmt.Errorf("invalid DSN format: %w", err)
 	}
 
-	// Return the SQLConnector struct, which implements driver.Connector
-	return &SQLConnector{
-		driver: d, // Reference to the driver
-		config: cfg,
+	if u.Scheme != DriverName {
+		return nil, fmt.Errorf("invalid scheme: expected '%s', got '%s'", DriverName, u.Scheme)
+	}
+
+	// Check if this might be the old format (dbname:host:port)
+	if u.User != nil && u.User.Username() != "" {
+		return nil, fmt.Errorf("invalid DSN format: found username in URL authority section. " +
+			"The correct format is: netsqlite://host:port/token?database=dbname")
+	}
+
+	addr := u.Host
+	if addr == "" || !strings.Contains(addr, ":") {
+		return nil, fmt.Errorf("gRPC server address (host:port) missing or invalid in DSN host part")
+	}
+
+	token := strings.TrimPrefix(u.Path, "/")
+	if token == "" {
+		return nil, fmt.Errorf("authentication token missing in DSN path")
+	}
+
+	dbName := u.Query().Get("database")
+	if dbName == "" {
+		return nil, fmt.Errorf("database name missing in DSN (use ?database=name)")
+	}
+
+	useTLS := false
+	if u.Query().Get("tls") == "true" {
+		useTLS = true
+	}
+
+	return &Config{
+		Addr:     addr,
+		DBName:   dbName,
+		Token:    token,
+		UseTLS:   useTLS,
+		RawQuery: u.RawQuery,
 	}, nil
 }
 
-// Open is included for compatibility with older Go versions or code
-// that might expect it. It simply calls OpenConnector and then Connect.
-// Note: sql package prefers OpenConnector if available.
+// OpenConnector parses DSN and returns a connector.
+func (d *SQLDriver) OpenConnector(dsn string) (driver.Connector, error) {
+	cfg, err := ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("netsqlite: parsing DSN failed: %w", err)
+	}
+
+	conn := &SQLConnector{
+		driver: d,
+		config: cfg,
+	}
+
+	println("made it out with conn details")
+	spew.Dump(conn)
+	return conn, nil
+}
+
+// Open provides compatibility for older sql package use.
 func (d *SQLDriver) Open(dsn string) (driver.Conn, error) {
-	// This implementation follows the older pattern if needed,
-	// but directly establishes the connection here.
 	connector, err := d.OpenConnector(dsn)
 	if err != nil {
 		return nil, err
 	}
-	return connector.Connect(context.Background()) // Connect immediately
-}
-
-// Config holds the parsed DSN information.
-type Config struct {
-	// RawDSN string // Optional: Store the original DSN if needed
-	Host   string // e.g., "db:host" from the DSN
-	DBName string // e.g., "db" extracted from Host
-	Addr   string // e.g., "host" extracted from Host (or just Host if no split)
-	Token  string // e.g., "token" from the DSN path
-	// Add other options derived from DSN query parameters if needed
-}
-
-// ParseDSN parses the netsqlite DSN string.
-// Example format: netsqlite://db:host/token
-func ParseDSN(dsn string) (*Config, error) {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL scheme: %w", err)
-	}
-
-	if u.Scheme != DriverName {
-		return nil, fmt.Errorf("invalid scheme: expected %s, got %s", DriverName, u.Scheme)
-	}
-
-	cfg := &Config{
-		Host: u.Host, // "db:host"
-	}
-
-	parts := strings.SplitN(u.Host, ":", 2)
-	if len(parts) == 2 {
-		cfg.DBName = parts[0]
-		cfg.Addr = parts[1]
-	} else {
-		return nil, fmt.Errorf("invalid host format: expected 'dbname:hostname', got '%s'", u.Host)
-	}
-
-	cfg.Token = strings.TrimPrefix(u.Path, "/")
-	if cfg.Token == "" {
-		return nil, fmt.Errorf("missing token in DSN path")
-	}
-
-	// TODO: Parse query parameters from u.Query() if you add any
-
-	return cfg, nil
+	println("attempting to connect")
+	return connector.Connect(context.Background())
 }

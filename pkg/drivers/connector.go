@@ -4,63 +4,69 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
-	//"your_project/internal/protocol" // Example import for your client
+	"time"
+
+	pb "github.com/alfredosa/netsqlite/proto/netsqlite/v1"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure" // Use insecure for now
+	// "google.golang.org/grpc/credentials" // Needed for TLS
 )
 
-// Ensure SQLConnector implements driver.Connector at compile time.
-var _ driver.Connector = &SQLConnector{}
-
-// SQLConnector manages the creation of new database connections.
+// SQLConnector creates connections.
 type SQLConnector struct {
 	driver *SQLDriver
 	config *Config
 }
 
-// Connect establishes a new database connection.
+var _ driver.Connector = &SQLConnector{}
+
+// Connect dials the gRPC server and performs an initial ping.
 func (c *SQLConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	// TODO: Implement the actual connection logic here.
-	// 1. Use c.config fields (Addr, Token, etc.)
-	// 2. Establish a network connection (e.g., net.Dial, gRPC client)
-	// 3. Perform authentication/handshake using c.config.Token
-	// 4. Wrap the underlying connection/client in your SQLConn struct.
-
-	fmt.Printf("Attempting to connect to %s (DB: %s) with token\n", c.config.Addr, c.config.DBName)
-
-	// Placeholder for actual connection logic
-	// Replace 'nil' with your actual network connection or client object
-	// Example:
-	// netConn, err := net.DialTimeout("tcp", c.config.Addr, 5*time.Second)
-	// if err != nil {
-	//     return nil, fmt.Errorf("netsqlite: failed to connect to %s: %w", c.config.Addr, err)
-	// }
-	// // Perform handshake/auth using netConn and c.config.Token
-	// // ... if auth fails: return nil, fmt.Errorf("netsqlite: authentication failed")
-	//
-	// // Hypothetical client from internal package
-	// protoClient := protocol.NewClient(netConn) // Or however you structure it
-	// if err := protoClient.Authenticate(ctx, c.config.Token); err != nil {
-	//     netConn.Close()
-	//     return nil, fmt.Errorf("netsqlite: authentication failed: %w", err)
-	// }
-
-	// On successful connection and authentication:
-	conn := &SQLConn{
-		connector: c, // Store reference back to connector/config if needed
-		// netConn: netConn,      // Store the raw network connection
-		// protoClient: protoClient // Store your protocol client
-		closed: false,
+	creds := &staticCredentials{
+		Token:        c.config.Token,
+		DatabaseName: c.config.DBName,
+		RequireTLS:   c.config.UseTLS,
 	}
 
-	// Optional: Ping the server immediately to ensure connectivity
-	// if err := conn.Ping(ctx); err != nil {
-	//     conn.Close() // Close the connection if ping fails
-	//     return nil, err
-	// }
+	var opts []grpc.DialOption
+	if creds.RequireTLS {
+		// TODO: Implement secure TLS credential loading based on Config
+		// Use credentials.NewClientTLSFromCert(...)
+		return nil, fmt.Errorf("netsqlite: TLS configured via DSN but client TLS loading not implemented")
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
 
-	return conn, nil // Return the SQLConn wrapper
+	opts = append(opts, grpc.WithPerRPCCredentials(creds))
+
+	grpcConn, err := grpc.NewClient(c.config.Addr, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("netsqlite: failed to dial gRPC server %s: %w", c.config.Addr, err)
+	}
+
+	grpcClient := pb.NewNetsqliteServiceClient(grpcConn)
+
+	// Create SQLConn wrapper BEFORE pinging
+	sqlConn := &SQLConn{
+		grpcConn: grpcConn,
+		client:   grpcClient,
+		dbName:   c.config.DBName,
+		closed:   false,
+	}
+
+	// Ping using the connection context to verify auth/connectivity
+	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pingCancel()
+	if err := sqlConn.Ping(pingCtx); err != nil {
+		sqlConn.Close()
+		return nil, fmt.Errorf("netsqlite: initial gRPC ping failed (check server logs for auth/db errors): %w", err)
+	}
+
+	return sqlConn, nil
 }
 
-// Driver returns the underlying driver instance.
+// Driver returns the parent driver.
 func (c *SQLConnector) Driver() driver.Driver {
 	return c.driver
 }

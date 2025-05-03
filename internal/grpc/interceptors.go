@@ -4,7 +4,7 @@ package proto
 import (
 	"context"
 	"log"
-	"strings" // For splitting metadata if needed
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -14,13 +14,13 @@ import (
 
 // Define keys for metadata
 const (
-	AuthTokenHeader = "authorization"   // Standard-ish header, e.g., "Bearer yourtoken"
-	DatabaseHeader  = "x-database-name" // Custom header for the target DB
+	AuthTokenHeader = "authorization"
+	DatabaseHeader  = "x-database-name"
 )
 
 // AuthInterceptor provides gRPC interceptors for authentication.
 type AuthInterceptor struct {
-	validTokens map[string]bool // Replace with your actual token validation logic
+	validTokens map[string]bool // TODO: REPLACEEEEE
 }
 
 // NewAuthInterceptor creates a new interceptor.

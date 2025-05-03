@@ -3,15 +3,12 @@ package proto
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
-	"path/filepath"
-	"sync" // For managing DB handles potentially
+	"log/slog"
 
-	// Import generated protobuf code (adjust path based on your module)
-	pb "github.com/alfredosa/netsqlite/internal/generated/proto/v1"
 	"github.com/alfredosa/netsqlite/internal/nsqlite"
+	pb "github.com/alfredosa/netsqlite/proto/netsqlite/v1"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -28,29 +25,13 @@ type netsqliteServer struct {
 	// TODO: VERY basic token check - REPLACE with secure validation
 	validTokens map[string]bool
 
-	// Map to hold open database connections (simple approach)
-	// Key: database_name from request
-	// Value: *sql.DB handle
-	// Needs mutex for concurrent access
-	dbManager *DBManager
-}
-
-type DBManager struct {
-	dbHandles map[string]*sql.DB
-	dbMutex   sync.RWMutex
-	datadir   string
-}
-
-func NewManager(datadir string) *DBManager {
-	return &DBManager{
-		dbHandles: make(map[string]*sql.DB),
-		datadir:   datadir,
-	}
+	// dbManager will manage all connections to all databases concurrently and safely
+	dbManager *nsqlite.DBManager
 }
 
 // NewNetsqliteServer creates a new server instance.
 func NewNetsqliteServer(tokens map[string]bool, datadir string) *netsqliteServer {
-	manager := NewManager(datadir)
+	manager := nsqlite.NewManager(datadir)
 
 	return &netsqliteServer{
 		validTokens: tokens,
@@ -58,59 +39,20 @@ func NewNetsqliteServer(tokens map[string]bool, datadir string) *netsqliteServer
 	}
 }
 
-// --- Helper to get/open DB handle ---
-func (s *DBManager) getDB(dbName string) (*sql.DB, error) {
-	if dbName == "" {
-		return nil, status.Error(codes.InvalidArgument, "database_name is required")
-	}
-
-	dbpath := filepath.Join(s.datadir, dbName)
-
-	s.dbMutex.RLock()
-	db, exists := s.dbHandles[dbpath]
-	s.dbMutex.RUnlock()
-
-	if exists {
-		return db, nil
-	}
-
-	// DB not open, try opening it (use WAL mode, etc.)
-	s.dbMutex.Lock()
-	defer s.dbMutex.Unlock()
-
-	// Double-check if another goroutine opened it while waiting for lock
-	db, exists = s.dbHandles[dbpath]
-	if exists {
-		return db, nil
-	}
-
-	newDb := nsqlite.CreateOrOpen(dbpath)
-
-	s.dbHandles[dbpath] = newDb
-	return newDb, nil
-}
-
-// // CloseAllDBs cleans up database handles on shutdown.
-// func (s *netsqliteServer) CloseAllDBs() {
-// 	s.dbMutex.Lock()
-// 	defer s.dbMutex.Unlock()
-// 	log.Println("Closing all database handles...")
-// 	for name, db := range s.dbHandles {
-// 		log.Printf("Closing DB: %s", name)
-// 		db.Close()
-// 	}
-// 	s.dbHandles = make(map[string]*sql.DB) // Clear the map
-// }
-
 // --- Service Method Implementations ---
 func (s *netsqliteServer) Ping(ctx context.Context, req *pb.PingRequest) (*pb.PingResponse, error) {
 	log.Println("Received Ping request")
-	db, err := s.dbManager.getDB(req.DatabaseName)
+	pool, err := s.dbManager.AcquirePool(req.DatabaseName)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := db.PingContext(ctx); err != nil {
+	db, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := db.Value().PingContext(ctx); err != nil {
 		log.Printf("Actual DB Ping failed for %s: %v", req.DatabaseName, err)
 		return nil, status.Errorf(codes.Internal, "database ping failed for %s: %v", req.DatabaseName, err)
 	}
@@ -119,9 +61,12 @@ func (s *netsqliteServer) Ping(ctx context.Context, req *pb.PingRequest) (*pb.Pi
 }
 
 func (s *netsqliteServer) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.ExecResponse, error) {
-	log.Printf("Received Exec request for DB: %s, SQL: %s", req.DatabaseName, req.Sql)
+	pool, err := s.dbManager.AcquirePool(req.DatabaseName)
+	if err != nil {
+		return nil, err
+	}
 
-	db, err := s.dbManager.getDB(req.DatabaseName)
+	db, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -129,10 +74,10 @@ func (s *netsqliteServer) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.Ex
 	// Convert protobuf Value args to []any
 	args := make([]any, len(req.Args))
 	for i, val := range req.Args {
-		args[i] = val.AsInterface() // Convert protobuf Value to Go type
+		args[i] = val.AsInterface()
 	}
 
-	sqlResult, err := db.ExecContext(ctx, req.Sql, args...)
+	sqlResult, err := db.Value().ExecContext(ctx, req.Sql, args...)
 	if err != nil {
 		log.Printf("Exec failed for DB '%s': %v", req.DatabaseName, err)
 		// TODO: Map SQLite errors to gRPC codes more specifically
@@ -143,7 +88,7 @@ func (s *netsqliteServer) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.Ex
 	rowsAffected, _ := sqlResult.RowsAffected() // Ignore error for simplicity here
 	lastInsertId, _ := sqlResult.LastInsertId() // Ignore error for simplicity here
 
-	log.Printf("Exec successful for DB '%s': RowsAffected=%d, LastInsertId=%d", req.DatabaseName, rowsAffected, lastInsertId)
+	slog.Info("Exec successful for DB", "db", req.DatabaseName, "ra", rowsAffected, "last_insert", lastInsertId)
 	return &pb.ExecResponse{
 		RowsAffected: rowsAffected,
 		LastInsertId: lastInsertId,
@@ -151,11 +96,14 @@ func (s *netsqliteServer) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.Ex
 }
 
 func (s *netsqliteServer) Query(req *pb.QueryRequest, stream pb.NetsqliteService_QueryServer) error {
-	log.Printf("Received Query request for DB: %s, SQL: %s", req.DatabaseName, req.Sql)
-
-	db, err := s.dbManager.getDB(req.DatabaseName)
+	pool, err := s.dbManager.AcquirePool(req.DatabaseName)
 	if err != nil {
-		return err // getDB returns gRPC status error
+		return err
+	}
+
+	db, err := pool.Acquire(stream.Context())
+	if err != nil {
+		return err
 	}
 
 	// Convert protobuf Value args to []any
@@ -164,7 +112,7 @@ func (s *netsqliteServer) Query(req *pb.QueryRequest, stream pb.NetsqliteService
 		args[i] = val.AsInterface()
 	}
 
-	rows, err := db.QueryContext(stream.Context(), req.Sql, args...)
+	rows, err := db.Value().QueryContext(stream.Context(), req.Sql, args...)
 	if err != nil {
 		log.Printf("Query failed for DB '%s': %v", req.DatabaseName, err)
 		return status.Errorf(codes.Internal, "SQL query failed: %v", err)

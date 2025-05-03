@@ -5,30 +5,28 @@ import (
 	"errors"
 )
 
-// Ensure SQLResult implements driver.Result at compile time.
+// SQLResult holds results from Exec operations.
+type SQLResult struct {
+	rowsAffected int64
+	lastInsertId int64
+}
+
 var _ driver.Result = &SQLResult{}
 
-// SQLResult holds the result of an Exec operation.
-type SQLResult struct {
-	lastInsertId int64
-	rowsAffected int64
-	// Add error field if needed for lazy error reporting, though usually errors are returned directly from ExecContext
-}
-
-// LastInsertId returns the database's auto-generated ID
-// after, for example, an INSERT into a table with primary
-// key.
+// LastInsertId returns the ID of the last inserted row.
+// Returns error if not supported or unavailable (-1 from server).
 func (r *SQLResult) LastInsertId() (int64, error) {
-	// TODO: Return the actual LastInsertId if available and supported.
-	// If not supported, return an error.
-	// return r.lastInsertId, nil
-	return 0, errors.New("netsqlite: LastInsertId not supported or available") // Placeholder
+	if r.lastInsertId == -1 { // Convention for unavailable
+		return 0, errors.New("netsqlite: LastInsertId not available or not supported")
+	}
+	return r.lastInsertId, nil
 }
 
-// RowsAffected returns the number of rows affected by the
-// query.
+// RowsAffected returns the number of rows affected.
+// Returns error if not supported or unavailable (-1 from server).
 func (r *SQLResult) RowsAffected() (int64, error) {
-	// TODO: Return the actual RowsAffected count if available.
-	// If not available, potentially return 0 or an error depending on expected behavior.
+	if r.rowsAffected == -1 { // Convention for unavailable
+		return 0, errors.New("netsqlite: RowsAffected not available")
+	}
 	return r.rowsAffected, nil
 }

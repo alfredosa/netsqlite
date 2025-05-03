@@ -5,7 +5,7 @@ package netsqlite.v1;
 
 import "google/protobuf/struct.proto";
 
-option go_package = "internal/generated/proto/v1;netsqlitev1";
+option go_package = "/proto/netsqlite/v1;netsqlitev1";
 
 // The main service definition for netsqlite operations
 service NetsqliteService {
