@@ -4,29 +4,34 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	proto "github.com/alfredosa/netsqlite/internal/grpc"
+	"github.com/stretchr/testify/assert"
 
 	_ "github.com/alfredosa/netsqlite/pkg/drivers"
 )
 
-func prepServer(ctx context.Context) (string, string) {
+func prepServer(ctx context.Context, t *testing.T) (string, string, dir) {
+	t.Helper()
 	token := "123"
 	addr := ":3451"
-	dir := "data"
+	dir, err := os.MkdirTemp("", "netsqlite-*")
+	assert.NoError(t, err)
 
 	go proto.Start(ctx, map[string]bool{token: true}, addr, dir)
 
-	return addr, token
+	return addr, token, dir
 
 }
 
 func Test_Ping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
-	addr, token := prepServer(ctx)
+	addr, token, dir := prepServer(ctx)
+	defer os.RemoveAll(dir)
 
 	dns := fmt.Sprintf("netsqlite://%s/%s?database=%s", addr, token, "testdb")
 	conn, err := sql.Open("netsqlite", dns)
