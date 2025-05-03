@@ -19,7 +19,7 @@ import (
 
 // netsqliteServer implements the NetsqliteServiceServer interface.
 type netsqliteServer struct {
-	pb.UnimplementedNetsqliteServiceServer // Recommended for forward compatibility
+	pb.UnimplementedNetsqliteServiceServer
 
 	// --- Server State ---
 	// TODO: VERY basic token check - REPLACE with secure validation
@@ -79,7 +79,6 @@ func (s *netsqliteServer) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.Ex
 
 	sqlResult, err := db.Value().ExecContext(ctx, req.Sql, args...)
 	if err != nil {
-		log.Printf("Exec failed for DB '%s': %v", req.DatabaseName, err)
 		// TODO: Map SQLite errors to gRPC codes more specifically
 		return nil, status.Errorf(codes.Internal, "SQL execution failed: %v", err)
 	}
@@ -152,11 +151,8 @@ func (s *netsqliteServer) Query(req *pb.QueryRequest, stream pb.NetsqliteService
 			return status.Errorf(codes.Internal, "failed to scan row: %v", err)
 		}
 
-		// Convert scanned Go values to protobuf Values
 		protoValues := make([]*structpb.Value, colCount)
 		for i, v := range values {
-			// structpb.NewValue handles basic types (int64, float64, bool, string, []byte, nil)
-			// It might need help with time.Time or other complex types depending on driver
 			protoValues[i], err = structpb.NewValue(v)
 			if err != nil {
 				log.Printf("Failed to convert value to protobuf Value: %v", err)
@@ -170,10 +166,7 @@ func (s *netsqliteServer) Query(req *pb.QueryRequest, stream pb.NetsqliteService
 			},
 		}
 
-		// Send the row
 		if err := stream.Send(rowResp); err != nil {
-			log.Printf("Failed to send row to client: %v", err)
-			// This usually means the client disconnected
 			return status.Errorf(codes.Internal, "failed to send row: %v", err)
 		}
 		// Check context cancellation frequently during long streams
@@ -185,12 +178,11 @@ func (s *netsqliteServer) Query(req *pb.QueryRequest, stream pb.NetsqliteService
 		}
 	} // end rows.Next() loop
 
-	// Check for errors after iterating
 	if err := rows.Err(); err != nil {
 		log.Printf("Error during row iteration for DB '%s': %v", req.DatabaseName, err)
 		return status.Errorf(codes.Internal, "row iteration error: %v", err)
 	}
 
 	log.Printf("Finished streaming query results for DB '%s'", req.DatabaseName)
-	return nil // Indicates successful end of stream
+	return nil
 }

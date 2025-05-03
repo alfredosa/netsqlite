@@ -10,7 +10,7 @@ import (
 	"time"
 
 	grpchandler "github.com/alfredosa/netsqlite/internal/grpc"
-	pb "github.com/alfredosa/netsqlite/proto/netsqlite/v1" // Adjust import path
+	pb "github.com/alfredosa/netsqlite/proto/netsqlite/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -26,35 +26,35 @@ func main() {
 	flag.Parse()
 	log.Printf("Starting netsqlite gRPC server on %s", *listenAddr)
 
+	Start()
+}
+
+func Start() {
 	lis, err := net.Listen("tcp", *listenAddr)
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
-	// --- Load Tokens (Replace with secure method) ---
+	// --- Load Tokens (TODO: Replace with secure method) ---
 	validTokens := map[string]bool{
 		"SUPERSECRETTOKEN": true,
 		"ANOTHERVALIDONE":  true,
 	}
 	log.Printf("Loaded %d valid token(s) (INSECURELY!)", len(validTokens))
 
-	// --- Create Auth Interceptor ---
 	authInterceptor := grpchandler.NewAuthInterceptor(validTokens)
 
-	// --- Create gRPC Server with Interceptors ---
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(authInterceptor.Unary()),
 		grpc.ChainStreamInterceptor(authInterceptor.Stream()),
 	)
 
-	// --- Create and Register Your Service Implementation ---
 	netsqliteSrv := grpchandler.NewNetsqliteServer(validTokens, *datadir)
 	pb.RegisterNetsqliteServiceServer(grpcServer, netsqliteSrv)
 
 	reflection.Register(grpcServer)
 	log.Println("gRPC reflection service registered.")
 
-	// --- Graceful Shutdown Handling ---
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

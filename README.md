@@ -48,9 +48,9 @@ import (
 )
 
 func main() {
-	// DSN: netsqlite://database_name:host:port/token
+	// DSN: netsqlite://host:port/token?database=name&tls=false
 	// If 'mydatabase.db' doesn't exist, it will create it (with WAL Enabled, for concurrent usage). 
-	dsn := "netsqlite://mydatabase.db:localhost:3541/SUPERSECRETTOKEN" // Use a valid token
+	dsn := "netsqlite://localhost:3541/SUPERTOKEN?database=mydatabase.db"
 
 	db, err := sql.Open("netsqlite", dsn)
 	if err != nil {
