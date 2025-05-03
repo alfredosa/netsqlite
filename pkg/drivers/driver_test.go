@@ -4,6 +4,7 @@ import (
 	"database/sql"
 
 	_ "github.com/alfredosa/netsqlite/pkg/drivers"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/alfredosa/netsqlite/pkg/drivers"
 	"testing"
@@ -59,7 +60,7 @@ func TestParseDSN(t *testing.T) {
 
 // Main flow of driver, should fail since no available server is running
 func Test_E2E(t *testing.T) {
-	dns := "netsqlite://localhost:8080/123?database=test"
+	dns := "netsqlite://localhost:3000/123?database=test"
 	conn, err := sql.Open("netsqlite", dns)
 	if err != nil {
 		t.Fatalf("Failed to open connection: %v", err)
@@ -70,18 +71,11 @@ func Test_E2E(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected Ping to fail with no server, but it succeeded")
 	}
-	t.Logf("Got expected error: %v", err)
 }
 
 func Test_E2EFailure(t *testing.T) {
 	dns := "netsqlite://test:localhost:8080/123"
 	conn, err := sql.Open("netsqlite", dns)
-	if err != nil {
-		t.FailNow()
-	}
-	err = conn.Ping()
-	if err != nil {
-		t.Fail()
-	}
-	t.Fail()
+	assert.Error(t, err)
+	assert.Nil(t, conn)
 }

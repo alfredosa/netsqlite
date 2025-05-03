@@ -14,7 +14,7 @@ import (
 	_ "github.com/alfredosa/netsqlite/pkg/drivers"
 )
 
-func prepServer(ctx context.Context, t *testing.T) (string, string, dir) {
+func prepServer(ctx context.Context, t *testing.T) (string, string, string) {
 	t.Helper()
 	token := "123"
 	addr := ":3451"
@@ -30,7 +30,7 @@ func prepServer(ctx context.Context, t *testing.T) (string, string, dir) {
 func Test_Ping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
-	addr, token, dir := prepServer(ctx)
+	addr, token, dir := prepServer(ctx, t)
 	defer os.RemoveAll(dir)
 
 	dns := fmt.Sprintf("netsqlite://%s/%s?database=%s", addr, token, "testdb")
